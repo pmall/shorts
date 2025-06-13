@@ -1,8 +1,13 @@
+"""
+Utility functions for the Reddit story scraper and evaluator.
+"""
+
 import json
+from typing import Any
 
 
-def load_config(config_path: str) -> dict:
-    """Load configuration from JSON file"""
+def load_config(config_path: str) -> dict[str, Any]:
+    """Load configuration from JSON file."""
     try:
         with open(config_path, "r") as f:
             config = json.load(f)

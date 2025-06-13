@@ -1,26 +1,41 @@
+"""
+Reddit scraper for extracting text-based stories from specified subreddits.
+"""
+
 import os
+from datetime import UTC, datetime, timedelta
+from typing import TypedDict
+
 import praw
-from typing import Optional
-from datetime import datetime, timedelta, UTC
 from praw.models import Submission
-from shorts_creator.utils import load_config
+
 from shorts_creator.database import create_database_manager
+from shorts_creator.utils import load_config
+
+
+class StoryData(TypedDict):
+    reddit_id: str
+    subreddit: str
+    content: str
+    created_utc: int
+    flair: str | None
 
 
 class RedditScraper:
-    """Handles Reddit API interactions and story extraction"""
+    """Handles Reddit API interactions and story extraction."""
 
-    def __init__(self, min_content_length: int = 100):
+    def __init__(self, min_content_length: int = 100) -> None:
+        """Initialize the Reddit scraper."""
         self.min_content_length = min_content_length
         self.reddit = praw.Reddit(
             client_id=os.getenv("REDDIT_CLIENT_ID"),
             client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
             user_agent=os.getenv("REDDIT_USER_AGENT"),
         )
-        print(f"[INFO] Connected to Reddit API as read-only")
+        print("[INFO] Connected to Reddit API as read-only")
 
     def format_content(self, submission: Submission) -> str:
-        """Format submission title and content as markdown"""
+        """Format submission title and content as markdown."""
         title = submission.title.strip()
         selftext = submission.selftext.strip() if submission.selftext else ""
 
@@ -32,7 +47,7 @@ class RedditScraper:
             return title
 
     def is_valid_story(self, submission: Submission) -> bool:
-        """Check if submission is a valid text-based story"""
+        """Check if submission is a valid text-based story."""
         # Skip if it's a link post (has URL but no selftext)
         if submission.url and not submission.is_self:
             return False
@@ -46,8 +61,8 @@ class RedditScraper:
 
     def get_stories_from_subreddit(
         self, subreddit_name: str, hours_back: int
-    ) -> list[dict]:
-        """Scrape stories from a subreddit within the specified time range"""
+    ) -> list[StoryData]:
+        """Scrape stories from a subreddit within the specified time range."""
         print(
             f"[INFO] Scraping r/{subreddit_name} for stories from last {hours_back} hours"
         )
@@ -56,7 +71,7 @@ class RedditScraper:
         cutoff_time = datetime.now(UTC) - timedelta(hours=hours_back)
         cutoff_timestamp = cutoff_time.timestamp()
 
-        stories = []
+        stories: list[StoryData] = []
         processed = 0
 
         try:
@@ -74,17 +89,17 @@ class RedditScraper:
                     continue
 
                 content = self.format_content(submission)
-                flair: Optional[str] = (
+                flair: str | None = (
                     submission.link_flair_text if submission.link_flair_text else None
                 )
                 stories.append(
-                    {
-                        "reddit_id": submission.id,
-                        "subreddit": subreddit_name,
-                        "content": content,
-                        "created_utc": int(submission.created_utc),
-                        "flair": flair,
-                    }
+                    StoryData(
+                        reddit_id=submission.id,
+                        subreddit=subreddit_name,
+                        content=content,
+                        created_utc=int(submission.created_utc),
+                        flair=flair,
+                    )
                 )
 
                 flair_info = f" [Flair: {flair}]" if flair else ""
@@ -96,62 +111,74 @@ class RedditScraper:
             print(f"[ERROR] Error scraping r/{subreddit_name}: {e}")
 
         print(
-            f"[INFO] Found {len(stories)} valid stories from r/{subreddit_name} (processed {processed} posts)"
+            f"[INFO] Found {len(stories)} valid stories from r/{subreddit_name} "
+            f"(processed {processed} posts)"
         )
         return stories
 
+    def run(self, config_file: str, hours: int) -> None:
+        """Main execution function."""
+        # Load configuration
+        config = load_config(config_file)
+        subreddits = config.get("subreddits", [])
+        min_length = config.get("min_content_length", 100)
 
-def run_scraper(config_file: str, hours: int):
-    # Load configuration
-    config = load_config(config_file)
-    subreddits = config.get("subreddits", [])
-    min_length = config.get("min_content_length", 100)
-
-    if not subreddits:
-        print("[ERROR] No subreddits specified in config")
-        return
-
-    print(f"[INFO] Starting scrape: {len(subreddits)} subreddits, {hours} hours back")
-
-    # Initialize components
-    db = create_database_manager()
-    scraper = RedditScraper(min_content_length=min_length)
-
-    try:
-        # Setup database
-        db.connect()
-        db.create_table()
-
-        total_new_stories = 0
-        total_duplicates = 0
-
-        # Scrape each subreddit
-        for subreddit_name in subreddits:
-            stories = scraper.get_stories_from_subreddit(subreddit_name, hours)
-
-            # Store stories in database
-            for story in stories:
-                inserted = db.insert_story(
-                    story["reddit_id"],
-                    story["subreddit"],
-                    story["content"],
-                    story["created_utc"],
-                    story["flair"],
-                )
-
-                if inserted:
-                    total_new_stories += 1
-                    print(f"[INFO] Stored new story: {story['reddit_id']}")
-                else:
-                    total_duplicates += 1
-                    print(f"[DEBUG] Duplicate story skipped: {story['reddit_id']}")
+        if not subreddits:
+            print("[ERROR] No subreddits specified in config")
+            return
 
         print(
-            f"[INFO] Scraping complete: {total_new_stories} new stories, {total_duplicates} duplicates"
+            f"[INFO] Starting scrape: {len(subreddits)} subreddits, {hours} hours back"
         )
 
-    except Exception as e:
-        print(f"[ERROR] Fatal error: {e}")
-        raise
-    finally:
-        db.close()
+        # Initialize database
+        db = create_database_manager()
+
+        try:
+            # Setup database
+            db.connect()
+            db.create_tables()
+
+            # Update minimum content length
+            self.min_content_length = min_length
+
+            total_new_stories = 0
+            total_duplicates = 0
+
+            # Scrape each subreddit
+            for subreddit_name in subreddits:
+                stories = self.get_stories_from_subreddit(subreddit_name, hours)
+
+                # Store stories in database
+                for story in stories:
+                    inserted = db.insert_story(
+                        story["reddit_id"],
+                        story["subreddit"],
+                        story["content"],
+                        story["created_utc"],
+                        story["flair"],
+                    )
+
+                    if inserted:
+                        total_new_stories += 1
+                        print(f"[INFO] Stored new story: {story['reddit_id']}")
+                    else:
+                        total_duplicates += 1
+                        print(f"[DEBUG] Duplicate story skipped: {story['reddit_id']}")
+
+            print(
+                f"[INFO] Scraping complete: {total_new_stories} new stories, "
+                f"{total_duplicates} duplicates"
+            )
+
+        except Exception as e:
+            print(f"[ERROR] Fatal error: {e}")
+            raise
+        finally:
+            db.close()
+
+
+def run_scraper(config_file: str, hours: int) -> None:
+    """Run the Reddit scraper with the specified configuration."""
+    scraper = RedditScraper()
+    scraper.run(config_file, hours)

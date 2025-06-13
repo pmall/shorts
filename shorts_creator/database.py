@@ -1,46 +1,53 @@
+"""
+Database operations for Reddit story scraper and evaluator.
+Supports SQLite and PostgreSQL databases using SQLAlchemy Core.
+"""
+
 import os
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Dict, List
+
 from sqlalchemy import (
-    create_engine,
-    Table,
     Column,
-    String,
-    Text,
-    MetaData,
-    insert,
     Engine,
-    Integer,
     ForeignKey,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+    create_engine,
+    insert,
     text,
 )
-from sqlalchemy.dialects.sqlite import INTEGER as SQLiteInteger
 from sqlalchemy.dialects.postgresql import BIGINT as PostgreSQLBigint
+from sqlalchemy.dialects.sqlite import INTEGER as SQLiteInteger
 from sqlalchemy.exc import IntegrityError
 
 
 class BaseDatabaseManager(ABC):
-    """Abstract base class for database operations using SQLAlchemy Core"""
+    """Abstract base class for database operations using SQLAlchemy Core."""
 
-    def __init__(self):
-        self.engine: Optional[Engine] = None
+    def __init__(self) -> None:
+        """Initialize the database manager."""
+        self.engine: Engine | None = None
         self.metadata = MetaData()
-        self.stories_table: Optional[Table] = None
-        self.evaluations_table: Optional[Table] = None
+        self.stories_table: Table | None = None
+        self.evaluations_table: Table | None = None
         self._create_table_schema()
 
     @abstractmethod
     def _get_connection_string(self) -> str:
-        """Return database-specific connection string"""
+        """Return database-specific connection string."""
         pass
 
     @abstractmethod
-    def _get_created_utc_column(self):
-        """Return database-specific column type for created_utc"""
+    def _get_created_utc_column(self) -> type:
+        """Return database-specific column type for created_utc."""
         pass
 
     def _create_table_schema(self) -> None:
-        """Create the table schemas"""
+        """Create the table schemas."""
         self.stories_table = Table(
             "stories",
             self.metadata,
@@ -66,15 +73,19 @@ class BaseDatabaseManager(ABC):
         )
 
     def connect(self) -> None:
-        """Establish database connection"""
+        """Establish database connection."""
         connection_string = self._get_connection_string()
-        print(
-            f"[INFO] Connecting to database: {connection_string.split('@')[-1] if '@' in connection_string else connection_string}"
+        # Hide credentials in log output
+        log_string = (
+            connection_string.split("@")[-1]
+            if "@" in connection_string
+            else connection_string
         )
+        print(f"[INFO] Connecting to database: {log_string}")
         self.engine = create_engine(connection_string)
 
-    def create_table(self) -> None:
-        """Create all tables if they don't exist"""
+    def create_tables(self) -> None:
+        """Create all tables if they don't exist."""
         if self.engine is None:
             raise RuntimeError("Database not connected. Call connect() first.")
 
@@ -87,9 +98,9 @@ class BaseDatabaseManager(ABC):
         subreddit: str,
         content: str,
         created_utc: int,
-        flair: Optional[str] = None,
+        flair: str | None = None,
     ) -> bool:
-        """Insert a story, ignoring duplicates. Returns True if inserted, False if duplicate"""
+        """Insert a story, ignoring duplicates. Returns True if inserted, False if duplicate."""
         if self.engine is None:
             raise RuntimeError("Database not connected. Call connect() first.")
 
@@ -114,9 +125,9 @@ class BaseDatabaseManager(ABC):
             return False
 
     def get_unevaluated_stories(
-        self, limit: Optional[int] = None
-    ) -> list[dict[str, Any]]:
-        """Get stories that haven't been evaluated yet"""
+        self, limit: int | None = None
+    ) -> List[Dict[str, str | int | None]]:
+        """Get stories that haven't been evaluated yet."""
         if self.engine is None:
             raise RuntimeError("Database not connected. Call connect() first.")
 
@@ -133,7 +144,7 @@ class BaseDatabaseManager(ABC):
 
         with self.engine.connect() as conn:
             result = conn.execute(text(query))
-            stories = []
+            stories: List[Dict[str, str | int | None]] = []
             for row in result:
                 stories.append(
                     {
@@ -148,8 +159,8 @@ class BaseDatabaseManager(ABC):
         print(f"[INFO] Found {len(stories)} unevaluated stories")
         return stories
 
-    def insert_evaluations(self, evaluations: list[dict[str, Any]]) -> int:
-        """Insert evaluations into database, returns number of successful insertions"""
+    def insert_evaluations(self, evaluations: List[Dict[str, str | int]]) -> int:
+        """Insert evaluations into database, returns number of successful insertions."""
         if self.engine is None:
             raise RuntimeError("Database not connected. Call connect() first.")
 
@@ -183,40 +194,49 @@ class BaseDatabaseManager(ABC):
         return successful_insertions
 
     def close(self) -> None:
-        """Close database connection"""
+        """Close database connection."""
         if self.engine:
             self.engine.dispose()
 
 
 class SQLiteDatabaseManager(BaseDatabaseManager):
-    """SQLite-specific database manager"""
+    """SQLite-specific database manager."""
 
     def _get_connection_string(self) -> str:
+        """Return SQLite connection string."""
         db_path = os.getenv("DB_PATH", "./stories.db")
         return f"sqlite:///{db_path}"
 
-    def _get_created_utc_column(self):
+    def _get_created_utc_column(self) -> type:
+        """Return SQLite-specific column type for created_utc."""
         return SQLiteInteger
 
 
 class PostgreSQLDatabaseManager(BaseDatabaseManager):
-    """PostgreSQL-specific database manager"""
+    """PostgreSQL-specific database manager."""
 
     def _get_connection_string(self) -> str:
+        """Return PostgreSQL connection string."""
         host = os.getenv("DB_HOST", "localhost")
         port = os.getenv("DB_PORT", "5432")
         database = os.getenv("DB_NAME")
         user = os.getenv("DB_USER")
         password = os.getenv("DB_PASSWORD")
 
+        if not all([database, user, password]):
+            raise ValueError(
+                "PostgreSQL requires DB_NAME, DB_USER, and DB_PASSWORD environment variables"
+            )
+
         return f"postgresql://{user}:{password}@{host}:{port}/{database}"
 
-    def _get_created_utc_column(self):
+    def _get_created_utc_column(self) -> type:
+        """Return PostgreSQL-specific column type for created_utc."""
         return PostgreSQLBigint
 
 
 def create_database_manager() -> BaseDatabaseManager:
-    """Factory function to create appropriate database manager"""
+    """Factory function to create appropriate database manager."""
     db_type = os.getenv("DB_TYPE", "sqlite").lower()
 
     if db_type == "sqlite":

@@ -6,13 +6,13 @@ Uses Gemini AI to evaluate Reddit stories for viral short video potential.
 
 import json
 import time
-import argparse
 from string import Template
-from typing import Any, Optional
+from typing import TypedDict, Any
+
 from google import genai
 from google.genai import types
 
-from database import create_database_manager
+from shorts_creator.database import create_database_manager
 
 # Constants
 CATEGORIES = [
@@ -33,7 +33,6 @@ TARGET_AUDIENCES = ["general", "young_adult", "mature", "teens"]
 MAX_TOKENS_PER_BATCH = 50000
 BATCH_DELAY_SECONDS = 4
 MAX_RETRIES = 3
-
 GEMINI_MODEL = "gemini-2.0-flash-lite"
 
 # Prompt template
@@ -76,36 +75,62 @@ Provide your evaluation in the following JSON format for each story:
 )
 
 
+class StoryData(TypedDict):
+    reddit_id: str
+    subreddit: str
+    content: str
+    created_utc: int
+    flair: str | None
+
+
+class EvaluationData(TypedDict):
+    reddit_id: str
+    score: int
+    category: str
+    target_audience: str
+
+
 class StoryEvaluator:
-    def __init__(self):
+    """Evaluates Reddit stories for viral potential using Gemini AI."""
+
+    def __init__(self) -> None:
+        """Initialize the story evaluator."""
         self.db_manager = create_database_manager()
         self.client = genai.Client()
 
-    def connect_and_setup(self):
-        """Connect to database and create tables"""
+    def connect_and_setup(self) -> None:
+        """Connect to database and create tables."""
         self.db_manager.connect()
-        self.db_manager.create_table()
+        self.db_manager.create_tables()
 
-    def get_unevaluated_stories(
-        self, limit: Optional[int] = None
-    ) -> list[dict[str, Any]]:
-        """Get stories that haven't been evaluated yet"""
-        return self.db_manager.get_unevaluated_stories(limit)
+    def get_unevaluated_stories(self, limit: int | None = None) -> list[StoryData]:
+        """Get stories that haven't been evaluated yet."""
+        raw_stories = self.db_manager.get_unevaluated_stories(limit)
+        return [
+            StoryData(
+                reddit_id=str(story["reddit_id"]),
+                subreddit=str(story["subreddit"]),
+                content=str(story["content"]),
+                created_utc=(
+                    int(story["created_utc"]) if story["created_utc"] is not None else 0
+                ),
+                flair=story["flair"] if story["flair"] is None else str(story["flair"]),
+            )
+            for story in raw_stories
+        ]
 
     def estimate_tokens(self, text: str) -> int:
-        """Rough token estimation (1 token ≈ 0.75 words)"""
+        """Rough token estimation (1 token ≈ 0.75 words)."""
         word_count = len(text.split())
         return int(word_count / 0.75)
 
-    def create_batches(
-        self, stories: list[dict[str, Any]]
-    ) -> list[list[dict[str, Any]]]:
-        """Create batches of stories respecting token limits and grouping by length"""
+    def create_batches(self, stories: list[StoryData]) -> list[list[StoryData]]:
+        """Create batches of stories respecting token limits and grouping by length."""
         # Sort stories by content length
         stories_by_length = sorted(stories, key=lambda x: len(x["content"]))
 
-        batches = []
-        current_batch = []
+        batches: list[list[StoryData]] = []
+        current_batch: list[StoryData] = []
         current_tokens = 0
 
         # Estimate base prompt tokens
@@ -146,18 +171,20 @@ Content: {story['content']}
         print(f"[INFO] Created {len(batches)} batches for processing")
         return batches
 
-    def build_prompt(self, stories: list[dict[str, Any]]) -> str:
-        """Build the evaluation prompt for a batch of stories"""
+    def build_prompt(self, stories: list[StoryData]) -> str:
+        """Build the evaluation prompt for a batch of stories."""
         stories_content = ""
         for story in stories:
             stories_content += f"""
-Story ID: {story['reddit_id']}\n
-Subreddit: r/{story['subreddit']}\n
-Flair: {story['flair'] or 'None'}\n
-Content: {story['content']}\n
-\n\n
+Story ID: {story['reddit_id']}
+Subreddit: r/{story['subreddit']}
+Flair: {story['flair'] or 'None'}
+Content: {story['content']}
+
+
 ---
-\n\n
+
+
 """
 
         return EVALUATION_PROMPT.substitute(
@@ -166,8 +193,8 @@ Content: {story['content']}\n
             audiences=", ".join(TARGET_AUDIENCES),
         )
 
-    def call_gemini(self, prompt: str) -> dict[str, Any]:
-        """Call Gemini API with the prompt"""
+    def call_gemini(self, prompt: str) -> dict[str, list[EvaluationData]]:
+        """Call Gemini API with the prompt."""
         try:
             response = self.client.models.generate_content(
                 model=GEMINI_MODEL,
@@ -182,12 +209,8 @@ Content: {story['content']}\n
             print(f"[ERROR] Gemini API call failed: {str(e)}")
             raise
 
-    def insert_evaluations(self, evaluations: list[dict[str, Any]]) -> int:
-        """Insert evaluations into database, returns number of successful insertions"""
-        return self.db_manager.insert_evaluations(evaluations)
-
     def validate_evaluation(self, evaluation: dict[str, Any]) -> bool:
-        """Validate a single evaluation"""
+        """Validate a single evaluation."""
         required_fields = ["reddit_id", "score", "category", "target_audience"]
 
         # Check required fields
@@ -215,8 +238,8 @@ Content: {story['content']}\n
 
         return True
 
-    def process_batch(self, batch: list[dict[str, Any]]) -> bool:
-        """Process a single batch of stories, returns True if successful"""
+    def process_batch(self, batch: list[StoryData]) -> bool:
+        """Process a single batch of stories, returns True if successful."""
         print(f"[INFO] Processing batch of {len(batch)} stories")
 
         # Build prompt
@@ -236,24 +259,24 @@ Content: {story['content']}\n
         evaluations = response["evaluations"]
 
         # Validate each evaluation
-        valid_evaluations = []
+        valid_evaluations: list[dict[str, Any]] = []
         for evaluation in evaluations:
-            if self.validate_evaluation(evaluation):
-                valid_evaluations.append(evaluation)
+            if self.validate_evaluation(dict(evaluation)):
+                valid_evaluations.append(dict(evaluation))
             else:
                 print(f"[WARNING] Skipping invalid evaluation: {evaluation}")
 
         # Insert valid evaluations
         if valid_evaluations:
-            inserted_count = self.insert_evaluations(valid_evaluations)
+            inserted_count = self.db_manager.insert_evaluations(valid_evaluations)
             print(f"[INFO] Successfully inserted {inserted_count} evaluations")
             return inserted_count > 0
         else:
             print("[ERROR] No valid evaluations to insert")
             return False
 
-    def run(self, max_stories: int):
-        """Main execution function"""
+    def run(self, max_stories: int) -> None:
+        """Main execution function."""
         print(f"[INFO] Starting story evaluation with max_stories={max_stories}")
 
         # Connect and setup
@@ -300,35 +323,11 @@ Content: {story['content']}\n
 
         print(f"[INFO] Evaluation complete. Processed {total_processed} stories")
 
-        # Close database connections
-        self.db_manager.close()
+        # Close database connection
         self.db_manager.close()
 
 
-def run_evaluator(max_stories: int):
+def run_evaluator(max_stories: int) -> None:
+    """Run the story evaluator."""
     evaluator = StoryEvaluator()
     evaluator.run(max_stories)
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Evaluate Reddit stories for viral short video potential"
-    )
-    parser.add_argument(
-        "--max-stories",
-        type=int,
-        default=1000,
-        help="Maximum number of stories to evaluate (default: 1000)",
-    )
-
-    args = parser.parse_args()
-
-    run_evaluator(args.max_stories)
-
-
-if __name__ == "__main__":
-    from dotenv import load_dotenv
-
-    load_dotenv()
-
-    main()
