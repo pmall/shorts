@@ -3,6 +3,8 @@ import praw
 from typing import Optional
 from datetime import datetime, timedelta, UTC
 from praw.models import Submission
+from shorts_creator.utils import load_config
+from shorts_creator.database import create_database_manager
 
 
 class RedditScraper:
@@ -97,3 +99,59 @@ class RedditScraper:
             f"[INFO] Found {len(stories)} valid stories from r/{subreddit_name} (processed {processed} posts)"
         )
         return stories
+
+
+def run_scraper(config_file: str, hours: int):
+    # Load configuration
+    config = load_config(config_file)
+    subreddits = config.get("subreddits", [])
+    min_length = config.get("min_content_length", 100)
+
+    if not subreddits:
+        print("[ERROR] No subreddits specified in config")
+        return
+
+    print(f"[INFO] Starting scrape: {len(subreddits)} subreddits, {hours} hours back")
+
+    # Initialize components
+    db = create_database_manager()
+    scraper = RedditScraper(min_content_length=min_length)
+
+    try:
+        # Setup database
+        db.connect()
+        db.create_table()
+
+        total_new_stories = 0
+        total_duplicates = 0
+
+        # Scrape each subreddit
+        for subreddit_name in subreddits:
+            stories = scraper.get_stories_from_subreddit(subreddit_name, hours)
+
+            # Store stories in database
+            for story in stories:
+                inserted = db.insert_story(
+                    story["reddit_id"],
+                    story["subreddit"],
+                    story["content"],
+                    story["created_utc"],
+                    story["flair"],
+                )
+
+                if inserted:
+                    total_new_stories += 1
+                    print(f"[INFO] Stored new story: {story['reddit_id']}")
+                else:
+                    total_duplicates += 1
+                    print(f"[DEBUG] Duplicate story skipped: {story['reddit_id']}")
+
+        print(
+            f"[INFO] Scraping complete: {total_new_stories} new stories, {total_duplicates} duplicates"
+        )
+
+    except Exception as e:
+        print(f"[ERROR] Fatal error: {e}")
+        raise
+    finally:
+        db.close()
