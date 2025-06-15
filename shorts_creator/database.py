@@ -217,18 +217,12 @@ class PostgreSQLDatabaseManager(BaseDatabaseManager):
 
     def _get_connection_string(self) -> str:
         """Return PostgreSQL connection string."""
-        host = os.getenv("DB_HOST", "localhost")
-        port = os.getenv("DB_PORT", "5432")
-        database = os.getenv("DB_NAME")
-        user = os.getenv("DB_USER")
-        password = os.getenv("DB_PASSWORD")
+        db_string = os.getenv("DB_STRING")
 
-        if not all([database, user, password]):
-            raise ValueError(
-                "PostgreSQL requires DB_NAME, DB_USER, and DB_PASSWORD environment variables"
-            )
+        if not db_string:
+            raise ValueError("PostgreSQL requires DB_STRING environment variables")
 
-        return f"postgresql://{user}:{password}@{host}:{port}/{database}"
+        return db_string
 
     def _get_created_utc_column(self) -> type:
         """Return PostgreSQL-specific column type for created_utc."""

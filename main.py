@@ -27,12 +27,6 @@ def main() -> None:
         "scrape", help="Scrape Reddit stories and store in database"
     )
     scraper_parser.add_argument(
-        "--hours",
-        type=int,
-        required=True,
-        help="Number of hours back to scrape from",
-    )
-    scraper_parser.add_argument(
         "--config",
         type=str,
         default="./config.json",
@@ -53,7 +47,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "scrape":
-        run_scraper(args.config, args.hours)
+        run_scraper(args.config)
     elif args.command == "evaluate":
         run_evaluator(args.max_stories)
     else:
