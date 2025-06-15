@@ -94,12 +94,47 @@ class BaseDatabaseManager(ABC):
         self.engine = create_engine(connection_string)
 
     def create_tables(self) -> None:
-        """Create all tables if they don't exist."""
+        """Create all tables and views if they don't exist."""
         if self.engine is None:
             raise RuntimeError("Database not connected. Call connect() first.")
 
         self.metadata.create_all(self.engine)
         print("[INFO] Database tables created/verified")
+
+        # Create the summary view
+        self._create_summary_view()
+        print("[INFO] Summary view created/verified")
+
+    def _create_summary_view(self) -> None:
+        """Create the summary view that joins stories and evaluations."""
+        if self.engine is None:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        # Drop view if it exists (for recreation with updated schema)
+        drop_view_sql = "DROP VIEW IF EXISTS summary"
+
+        # Create view with INNER JOIN using WHERE clause
+        create_view_sql = """
+        CREATE VIEW summary AS
+        SELECT 
+            s.reddit_id,
+            s.subreddit,
+            s.content,
+            s.created_utc,
+            s.flair,
+            se.score,
+            se.category,
+            se.target_audience
+        FROM stories s, stories_evaluations se
+        WHERE s.reddit_id = se.reddit_id
+        """
+
+        with self.engine.connect() as conn:
+            # Drop existing view
+            conn.execute(text(drop_view_sql))
+            # Create new view
+            conn.execute(text(create_view_sql))
+            conn.commit()
 
     def insert_story(
         self,
