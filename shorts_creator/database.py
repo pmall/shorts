@@ -21,7 +21,9 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import BIGINT as PostgreSQLBigint
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import INTEGER as SQLiteInteger
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
 
@@ -46,6 +48,13 @@ class BaseDatabaseManager(ABC):
         """Return database-specific column type for created_utc."""
         pass
 
+    @abstractmethod
+    def _insert_evaluations_batch(
+        self, conn, evaluations: List[Dict[str, str | int]]
+    ) -> int:
+        """Database-specific batch insert implementation."""
+        pass
+
     def _create_table_schema(self) -> None:
         """Create the table schemas."""
         self.stories_table = Table(
@@ -59,7 +68,7 @@ class BaseDatabaseManager(ABC):
         )
 
         self.evaluations_table = Table(
-            "story_evaluations",
+            "stories_evaluations",
             self.metadata,
             Column(
                 "reddit_id",
@@ -134,7 +143,7 @@ class BaseDatabaseManager(ABC):
         query = """
         SELECT s.reddit_id, s.subreddit, s.content, s.created_utc, s.flair
         FROM stories s
-        LEFT JOIN story_evaluations se ON s.reddit_id = se.reddit_id
+        LEFT JOIN stories_evaluations se ON s.reddit_id = se.reddit_id
         WHERE se.reddit_id IS NULL
         ORDER BY s.created_utc DESC
         """
@@ -167,31 +176,19 @@ class BaseDatabaseManager(ABC):
         if self.evaluations_table is None:
             raise RuntimeError("Evaluations table not initialized.")
 
-        successful_insertions = 0
+        if not evaluations:
+            return 0
 
-        with self.engine.connect() as conn:
-            for eval_data in evaluations:
-                try:
-                    stmt = insert(self.evaluations_table).values(
-                        reddit_id=eval_data["reddit_id"],
-                        score=eval_data["score"],
-                        category=eval_data["category"],
-                        target_audience=eval_data["target_audience"],
-                    )
-                    conn.execute(stmt)
-                    successful_insertions += 1
-                except IntegrityError:
-                    print(
-                        f"[WARNING] Duplicate evaluation for story {eval_data['reddit_id']}"
-                    )
-                except Exception as e:
-                    print(
-                        f"[ERROR] Failed to insert evaluation for {eval_data['reddit_id']}: {str(e)}"
-                    )
-
-            conn.commit()
-
-        return successful_insertions
+        try:
+            with self.engine.connect() as conn:
+                successful_insertions = self._insert_evaluations_batch(
+                    conn, evaluations
+                )
+                conn.commit()
+                return successful_insertions
+        except Exception as e:
+            print(f"[ERROR] Batch insert failed: {str(e)}")
+            return 0
 
     def close(self) -> None:
         """Close database connection."""
@@ -211,6 +208,45 @@ class SQLiteDatabaseManager(BaseDatabaseManager):
         """Return SQLite-specific column type for created_utc."""
         return SQLiteInteger
 
+    def _insert_evaluations_batch(
+        self, conn, evaluations: List[Dict[str, str | int]]
+    ) -> int:
+        """SQLite-specific batch insert implementation."""
+        if self.evaluations_table is None:
+            raise RuntimeError("Evaluations table not initialized.")
+
+        successful_insertions = 0
+
+        try:
+            # Try bulk insert first
+            stmt = sqlite_insert(self.evaluations_table).values(evaluations)
+            stmt = stmt.on_conflict_do_nothing()
+            result = conn.execute(stmt)
+            successful_insertions = result.rowcount
+        except Exception as e:
+            # Fallback to individual inserts for SQLite if bulk fails
+            print(f"[WARNING] Bulk insert failed, trying individual inserts: {str(e)}")
+            conn.rollback()
+            for eval_data in evaluations:
+                try:
+                    stmt = sqlite_insert(self.evaluations_table).values(
+                        reddit_id=eval_data["reddit_id"],
+                        score=eval_data["score"],
+                        category=eval_data["category"],
+                        target_audience=eval_data["target_audience"],
+                    )
+                    stmt = stmt.on_conflict_do_nothing()
+                    result = conn.execute(stmt)
+                    if result.rowcount > 0:
+                        successful_insertions += 1
+                except Exception as inner_e:
+                    print(
+                        f"[ERROR] Failed to insert evaluation for {eval_data['reddit_id']}: {str(inner_e)}"
+                    )
+
+        print(f"[INFO] Successfully inserted {successful_insertions} evaluations")
+        return successful_insertions
+
 
 class PostgreSQLDatabaseManager(BaseDatabaseManager):
     """PostgreSQL-specific database manager."""
@@ -227,6 +263,21 @@ class PostgreSQLDatabaseManager(BaseDatabaseManager):
     def _get_created_utc_column(self) -> type:
         """Return PostgreSQL-specific column type for created_utc."""
         return PostgreSQLBigint
+
+    def _insert_evaluations_batch(
+        self, conn, evaluations: List[Dict[str, str | int]]
+    ) -> int:
+        """PostgreSQL-specific batch insert implementation."""
+        if self.evaluations_table is None:
+            raise RuntimeError("Evaluations table not initialized.")
+
+        stmt = pg_insert(self.evaluations_table).values(evaluations)
+        stmt = stmt.on_conflict_do_nothing(index_elements=["reddit_id"])
+        result = conn.execute(stmt)
+        successful_insertions = result.rowcount
+
+        print(f"[INFO] Successfully inserted {successful_insertions} evaluations")
+        return successful_insertions
 
 
 def create_database_manager() -> BaseDatabaseManager:
