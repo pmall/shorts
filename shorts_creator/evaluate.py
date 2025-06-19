@@ -6,13 +6,13 @@ Uses Gemini AI to evaluate Reddit stories for viral short video potential.
 
 import json
 import time
-from string import Template
 from typing import TypedDict, Any
 
 from google import genai
 from google.genai import types
 
 from shorts_creator.database import create_database_manager
+from shorts_creator.prompts import EVALUATION_PROMPT_TEMPLATE
 
 # Constants
 CATEGORIES = [
@@ -66,67 +66,6 @@ RESPONSE_SCHEMA = {
         "required": ["reddit_id", "score", "category", "target_audience"],
     },
 }
-
-# Prompt template
-EVALUATION_PROMPT = Template(
-    f"""
-You are an expert content creator who specializes in viral short-form video content for entertainment purposes. Your task is to evaluate Reddit stories for their potential to become captivating, ENTERTAINING viral short videos that people would enjoy watching and sharing.
-
-IMPORTANT: You are creating content for ENTERTAINMENT, not therapy or serious discussion. Stories must be suitable for light, engaging video content.
-
-AUTOMATICALLY SCORE 0-10 (unsuitable) for stories involving:
-- Suicide, self-harm, or mental health crises
-- Drug addiction, substance abuse, or overdoses
-- Sexual abuse, domestic violence, or serious trauma
-- Death of family members or serious illness
-- Deep personal confessions about serious life problems
-- Stories that are too heavy, dark, or depressing for entertainment
-- Content that would make viewers uncomfortable rather than entertained
-
-GOOD CONTENT for viral short videos includes:
-- Funny workplace mishaps or awkward situations
-- Light relationship drama with clear resolution
-- Satisfying revenge stories (petty, not harmful)
-- Embarrassing but harmless moments
-- Wholesome family interactions
-- Clever solutions to everyday problems
-- Mild mysteries or plot twists
-- Humorous misunderstandings
-- Feel-good moments and positive outcomes
-
-For each story, consider these factors:
-- Is this ENTERTAINING rather than heavy or depressing?
-- Would this make people smile, laugh, or feel satisfied?
-- Does it have emotional hooks without being traumatic?
-- Clear conflict/resolution or narrative arc
-- Relatability without being too personal/intimate
-- Surprising elements or satisfying twists
-- Visual storytelling potential for short video format
-- Shareability - would people want to share this for fun?
-
-Rate each story on a scale of 0-1000 where:
-- 0-10: Unsuitable for entertainment content (too heavy, dark, personal, or inappropriate)
-- 11-20: Poor viral potential, boring but not harmful
-- 21-40: Below average, some elements but lacking entertainment value
-- 41-60: Average potential, decent story but common
-- 61-80: Good potential, engaging and entertaining with viral elements
-- 81-100: Excellent potential, highly entertaining and viral-worthy
-
-Remember: We're making ENTERTAINMENT content, not documentaries about serious life issues.
-
-Also categorize each story and identify the target audience.
-categories: {", ".join(CATEGORIES)}
-target audiences: {", ".join(TARGET_AUDIENCES)}
-
-Make sure to evaluate all stories of the list.
-
-Stories to evaluate:
-
----
-
-$stories_content
-"""
-)
 
 
 class StoryData(TypedDict):
@@ -195,14 +134,6 @@ Content: {story['content']}
         current_batch: list[StoryData] = []
         current_tokens = 0
 
-        # Estimate base prompt tokens
-        base_prompt = EVALUATION_PROMPT.safe_substitute(
-            stories_content="",
-            categories=", ".join(CATEGORIES),
-            audiences=", ".join(TARGET_AUDIENCES),
-        )
-        base_tokens = self.estimate_tokens(base_prompt)
-
         for story in stories_by_length:
             # Format story for prompt
             story_text = self.format_story_for_prompt(story)
@@ -210,9 +141,7 @@ Content: {story['content']}
             story_tokens = self.estimate_tokens(story_text)
 
             # Check if adding this story would exceed either limit
-            would_exceed_tokens = (
-                current_tokens + story_tokens + base_tokens > MAX_TOKENS_PER_BATCH
-            )
+            would_exceed_tokens = current_tokens + story_tokens > MAX_TOKENS_PER_BATCH
             would_exceed_count = len(current_batch) >= MAX_STORIES_PER_BATCH
 
             if (would_exceed_tokens or would_exceed_count) and current_batch:
@@ -232,14 +161,12 @@ Content: {story['content']}
 
     def build_prompt(self, stories: list[StoryData]) -> str:
         """Build the evaluation prompt for a batch of stories."""
-        stories_content = "\n\n---\n\n".join(
-            [self.format_story_for_prompt(s) for s in stories]
-        )
+        stories_content = [self.format_story_for_prompt(s) for s in stories]
 
-        return EVALUATION_PROMPT.substitute(
-            stories_content=stories_content.strip(),
-            categories=", ".join(CATEGORIES),
-            audiences=", ".join(TARGET_AUDIENCES),
+        return EVALUATION_PROMPT_TEMPLATE(
+            stories_content=stories_content,
+            categories=CATEGORIES,
+            target_audiences=TARGET_AUDIENCES,
         )
 
     def call_gemini(self, prompt: str) -> list[EvaluationData]:
